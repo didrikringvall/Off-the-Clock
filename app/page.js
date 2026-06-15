@@ -15,6 +15,11 @@ export default function Home() {
   const [activeImage, setActiveImage] = useState(null);
   const [limitInput, setLimitInput] = useState('');
   const [penaltyInput, setPenaltyInput] = useState('');
+  const [hoursInput, setHoursInput] = useState('');
+  const [savingHours, setSavingHours] = useState(false);
+  const [challengeWeeksInput, setChallengeWeeksInput] = useState('4');
+  const [challengeLimitInput, setChallengeLimitInput] = useState('10');
+  const [challengePenaltyInput, setChallengePenaltyInput] = useState('5 km run');
 
   useEffect(() => {
     const stored = window.localStorage.getItem(NAME_KEY);
@@ -85,11 +90,13 @@ export default function Home() {
       const fresh = await freshRes.json();
       const members = { ...fresh.members };
       if (!members[myName]) members[myName] = { submissions: {} };
+      const existing = members[myName].submissions?.[group.current_week] || {};
       members[myName] = {
         ...members[myName],
         submissions: {
           ...members[myName].submissions,
           [group.current_week]: {
+            ...existing,
             image: uploadData.url,
             uploadedAt: new Date().toISOString(),
           },
@@ -104,6 +111,37 @@ export default function Home() {
     }
   }
 
+  async function handleSaveHours(e) {
+    e.preventDefault();
+    const hours = parseFloat(hoursInput);
+    if (isNaN(hours) || hours < 0) return;
+    setSavingHours(true);
+    try {
+      const freshRes = await fetch('/api/group');
+      const fresh = await freshRes.json();
+      const members = { ...fresh.members };
+      if (!members[myName]) members[myName] = { submissions: {} };
+      const existing = members[myName].submissions?.[fresh.current_week] || {};
+      members[myName] = {
+        ...members[myName],
+        submissions: {
+          ...members[myName].submissions,
+          [fresh.current_week]: {
+            ...existing,
+            hours,
+          },
+        },
+      };
+      await patchGroup({ members });
+      setHoursInput('');
+    } catch (err) {
+      console.error(err);
+      alert('Saving hours failed: ' + err.message);
+    } finally {
+      setSavingHours(false);
+    }
+  }
+
   async function saveSettings(e) {
     e.preventDefault();
     const limit = parseFloat(limitInput);
@@ -114,9 +152,96 @@ export default function Home() {
     setView('main');
   }
 
-  async function startNewWeek() {
-    await patchGroup({ current_week: getWeekId(new Date()) });
+  async function advanceOneWeek() {
+    const fresh = await (await fetch('/api/group')).json();
+    const endingWeek = fresh.current_week;
+
+    const results = {};
+    Object.entries(fresh.members).forEach(([name, member]) => {
+      const sub = member.submissions?.[endingWeek];
+      if (sub && sub.image && typeof sub.hours === 'number') {
+        results[name] = sub.hours;
+      }
+    });
+
+    const newPenalties = [];
+    Object.entries(results).forEach(([name, hours]) => {
+      if (hours > fresh.limit_hours) {
+        newPenalties.push({ name, text: fresh.penalty_text, week: endingWeek });
+      }
+    });
+
+    const weekRecord = {
+      week: endingWeek,
+      limit_hours: fresh.limit_hours,
+      penalty_text: fresh.penalty_text,
+      results,
+    };
+    const weekHistory = [...(fresh.week_history || []), weekRecord];
+    const penaltiesOwed = [...(fresh.penalties_owed || []), ...newPenalties];
+    const nextWeek = getWeekId(new Date(new Date(endingWeek).getTime() + 7 * 24 * 60 * 60 * 1000));
+
+    let challenge = fresh.challenge ? { ...fresh.challenge } : null;
+    let challengeSummary = fresh.challenge_summary || null;
+
+    if (challenge) {
+      challenge.weeks_completed = (challenge.weeks_completed || 0) + 1;
+      if (challenge.weeks_completed >= challenge.total_weeks) {
+        const challengeWeeks = weekHistory.filter(
+          (w) => w.week >= challenge.start_week && w.week < nextWeek
+        );
+        challengeSummary = {
+          start_week: challenge.start_week,
+          total_weeks: challenge.total_weeks,
+          limit_hours: challenge.limit_hours,
+          penalty_text: challenge.penalty_text,
+          weeks: challengeWeeks,
+        };
+        challenge = null;
+      }
+    }
+
+    await patchGroup({
+      current_week: nextWeek,
+      week_history: weekHistory,
+      penalties_owed: penaltiesOwed,
+      challenge,
+      challenge_summary: challengeSummary,
+    });
     setView('main');
+  }
+
+  async function clearPenalty(index) {
+    const fresh = await (await fetch('/api/group')).json();
+    const penaltiesOwed = [...(fresh.penalties_owed || [])];
+    penaltiesOwed.splice(index, 1);
+    await patchGroup({ penalties_owed: penaltiesOwed });
+  }
+
+  async function startChallenge(weeks, limit, penalty) {
+    const fresh = await (await fetch('/api/group')).json();
+    await patchGroup({
+      limit_hours: limit,
+      penalty_text: penalty,
+      challenge: {
+        start_week: fresh.current_week,
+        total_weeks: weeks,
+        limit_hours: limit,
+        penalty_text: penalty,
+        weeks_completed: 0,
+      },
+      challenge_summary: null,
+    });
+    setLimitInput(String(limit));
+    setPenaltyInput(penalty);
+  }
+
+  async function cancelChallenge() {
+    await patchGroup({ challenge: null });
+  }
+
+  async function dismissChallengeSummary() {
+    await patchGroup({ challenge_summary: null });
   }
 
   if (loading) {
@@ -173,6 +298,7 @@ export default function Home() {
             step="0.5"
             value={limitInput}
             onChange={(e) => setLimitInput(e.target.value)}
+            disabled={!!group.challenge}
             style={{ marginBottom: 16 }}
           />
           <label style={{ display: 'block', fontSize: 13, color: 'var(--ink-soft)', marginBottom: 8 }}>
@@ -183,17 +309,129 @@ export default function Home() {
             value={penaltyInput}
             onChange={(e) => setPenaltyInput(e.target.value)}
             placeholder="e.g. 5 km run"
+            disabled={!!group.challenge}
           />
-          <button type="submit" className="primary" style={{ marginTop: 16, width: '100%' }}>
+          <button type="submit" className="primary" disabled={!!group.challenge} style={{ marginTop: 16, width: '100%' }}>
             Save
           </button>
+          {group.challenge && (
+            <p className="muted" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+              Limit and penalty are set by the active challenge below. Cancel it to edit these directly.
+            </p>
+          )}
         </form>
-        <div className="card">
+        <div className="card" style={{ marginBottom: 16 }}>
           <p className="muted" style={{ fontSize: 13, marginTop: 0, marginBottom: 12 }}>
-            Start a new week. This won't delete past screenshots, but the leaderboard will show this week as fresh and unsubmitted for everyone.
+            Manually move to the next week. Anyone with a screenshot + hours over the limit this week gets added to "Penalties owed." Use this if your group isn't running a scheduled challenge, or to advance early.
           </p>
-          <button onClick={startNewWeek} style={{ width: '100%' }}>Start new week</button>
+          <button onClick={advanceOneWeek} style={{ width: '100%' }}>Start new week</button>
         </div>
+
+        <div className="card" style={{ marginBottom: 16 }}>
+          <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 600, margin: '0 0 8px' }}>
+            Challenge
+          </h2>
+          {group.challenge ? (
+            <>
+              <p style={{ fontSize: 14, margin: '0 0 4px' }}>
+                Week {(group.challenge.weeks_completed || 0) + 1} of {group.challenge.total_weeks}
+              </p>
+              <p className="muted" style={{ fontSize: 13, margin: '0 0 12px' }}>
+                {group.challenge.limit_hours}h limit/week · {group.challenge.penalty_text}. Weeks roll over automatically every Monday.
+              </p>
+              <button onClick={cancelChallenge} style={{ width: '100%' }}>Cancel challenge</button>
+            </>
+          ) : (
+            <>
+              <p className="muted" style={{ fontSize: 13, margin: '0 0 12px' }}>
+                Set up a multi-week challenge. Weeks will roll over automatically every Monday at midnight, no button needed.
+              </p>
+              <label style={{ display: 'block', fontSize: 13, color: 'var(--ink-soft)', marginBottom: 8 }}>
+                Number of weeks
+              </label>
+              <input
+                type="number"
+                min="1"
+                max="52"
+                step="1"
+                value={challengeWeeksInput}
+                onChange={(e) => setChallengeWeeksInput(e.target.value)}
+                style={{ marginBottom: 12 }}
+              />
+              <label style={{ display: 'block', fontSize: 13, color: 'var(--ink-soft)', marginBottom: 8 }}>
+                Weekly limit (hours)
+              </label>
+              <input
+                type="number"
+                min="1"
+                max="40"
+                step="0.5"
+                value={challengeLimitInput}
+                onChange={(e) => setChallengeLimitInput(e.target.value)}
+                style={{ marginBottom: 12 }}
+              />
+              <label style={{ display: 'block', fontSize: 13, color: 'var(--ink-soft)', marginBottom: 8 }}>
+                Penalty for going over
+              </label>
+              <input
+                type="text"
+                value={challengePenaltyInput}
+                onChange={(e) => setChallengePenaltyInput(e.target.value)}
+                placeholder="e.g. 5 km run"
+                style={{ marginBottom: 12 }}
+              />
+              <button
+                className="primary"
+                style={{ width: '100%' }}
+                onClick={() => {
+                  const weeks = parseInt(challengeWeeksInput, 10);
+                  const limit = parseFloat(challengeLimitInput);
+                  const penalty = challengePenaltyInput.trim();
+                  if (!isNaN(weeks) && weeks > 0 && !isNaN(limit) && limit > 0 && penalty) {
+                    startChallenge(weeks, limit, penalty);
+                  }
+                }}
+              >
+                Start challenge
+              </button>
+            </>
+          )}
+        </div>
+
+        {group.week_history && group.week_history.length > 0 && (
+          <div className="card">
+            <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 600, margin: '0 0 12px' }}>
+              History
+            </h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {[...group.week_history].reverse().map((w) => (
+                <div key={w.week}>
+                  <p style={{ fontSize: 13, fontWeight: 500, margin: '0 0 4px' }}>
+                    {formatWeekRange(w.week)} <span className="muted">· limit {w.limit_hours}h</span>
+                  </p>
+                  {Object.keys(w.results).length === 0 ? (
+                    <p className="muted" style={{ fontSize: 12, margin: 0 }}>No submissions.</p>
+                  ) : (
+                    Object.entries(w.results)
+                      .sort((a, b) => a[1] - b[1])
+                      .map(([name, hours]) => (
+                        <p
+                          key={name}
+                          style={{
+                            fontSize: 12,
+                            margin: '2px 0',
+                            color: hours > w.limit_hours ? 'var(--clay)' : 'var(--moss)',
+                          }}
+                        >
+                          {name}: {hours}h {hours > w.limit_hours ? '(over)' : '(under)'}
+                        </p>
+                      ))
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </main>
     );
   }
@@ -201,6 +439,95 @@ export default function Home() {
   const week = group.current_week;
   const names = Object.keys(group.members);
   const mySubmission = group.members[myName]?.submissions?.[week];
+
+  const leaderboardEntries = names
+    .map((name) => {
+      const sub = group.members[name]?.submissions?.[week];
+      const complete = !!(sub?.image && typeof sub?.hours === 'number');
+      return { name, sub, complete };
+    })
+    .sort((a, b) => {
+      if (a.complete && b.complete) return a.sub.hours - b.sub.hours;
+      if (a.complete) return -1;
+      if (b.complete) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+  if (group.challenge_summary) {
+    const summary = group.challenge_summary;
+    const totals = {};
+    summary.weeks.forEach((w) => {
+      Object.entries(w.results).forEach(([name, hours]) => {
+        if (!totals[name]) totals[name] = { weeks: 0, overCount: 0, totalHours: 0 };
+        totals[name].weeks += 1;
+        totals[name].totalHours += hours;
+        if (hours > w.limit_hours) totals[name].overCount += 1;
+      });
+    });
+    const ranked = Object.entries(totals).sort((a, b) => a[1].overCount - b[1].overCount);
+
+    return (
+      <main className="container">
+        <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 30, fontWeight: 600, margin: '0 0 4px' }}>
+          Challenge complete
+        </h1>
+        <p className="muted" style={{ margin: '0 0 24px', fontSize: 13 }}>
+          {formatWeekRange(summary.start_week)} · {summary.total_weeks} weeks · {summary.limit_hours}h/week limit
+        </p>
+
+        <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 600, margin: '0 0 12px' }}>
+          Final standings
+        </h2>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 24 }}>
+          {ranked.map(([name, t], i) => (
+            <div
+              key={name}
+              className="card"
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px' }}
+            >
+              <span style={{ fontSize: 14, fontWeight: 500 }}>
+                <span className="muted" style={{ fontFamily: 'var(--font-display)', fontWeight: 600, marginRight: 8 }}>
+                  #{i + 1}
+                </span>
+                {name}{name === myName ? ' (you)' : ''}
+              </span>
+              <span className="muted" style={{ fontSize: 13 }}>
+                {t.overCount} week{t.overCount === 1 ? '' : 's'} over · avg {(t.totalHours / t.weeks).toFixed(1)}h
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 600, margin: '0 0 12px' }}>
+          Week by week
+        </h2>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
+          {summary.weeks.map((w) => (
+            <div key={w.week} className="card">
+              <p style={{ fontSize: 13, fontWeight: 500, margin: '0 0 8px' }}>{formatWeekRange(w.week)}</p>
+              {Object.entries(w.results)
+                .sort((a, b) => a[1] - b[1])
+                .map(([name, hours]) => (
+                  <p
+                    key={name}
+                    style={{ fontSize: 12, margin: '2px 0', color: hours > w.limit_hours ? 'var(--clay)' : 'var(--moss)' }}
+                  >
+                    {name}: {hours}h {hours > w.limit_hours ? '(over)' : '(under)'}
+                  </p>
+                ))}
+              {Object.keys(w.results).length === 0 && (
+                <p className="muted" style={{ fontSize: 12, margin: 0 }}>No submissions.</p>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <button className="primary" style={{ width: '100%' }} onClick={dismissChallengeSummary}>
+          Continue
+        </button>
+      </main>
+    );
+  }
 
   return (
     <main className="container">
@@ -211,6 +538,9 @@ export default function Home() {
           </h1>
           <p className="muted" style={{ margin: '4px 0 0', fontSize: 13 }}>
             {formatWeekRange(week)}
+            {group.challenge && (
+              <> · Week {(group.challenge.weeks_completed || 0) + 1} of {group.challenge.total_weeks}</>
+            )}
           </p>
         </div>
         <button onClick={() => setView('settings')} aria-label="Settings">⚙</button>
@@ -247,7 +577,7 @@ export default function Home() {
         }}
       >
         <span style={{ fontSize: 14 }}>
-          {uploading ? 'Uploading…' : mySubmission ? 'Replace your screenshot' : 'Upload your Screen Time screenshot'}
+          {uploading ? 'Uploading…' : mySubmission?.image ? 'Replace your screenshot' : 'Upload your Screen Time screenshot'}
         </span>
         <span className="muted" style={{ fontSize: 12 }}>From Settings → Screen Time</span>
       </label>
@@ -260,17 +590,42 @@ export default function Home() {
         disabled={uploading}
       />
 
+      {mySubmission?.image && (
+        <form onSubmit={handleSaveHours} className="card" style={{ marginTop: 8, marginBottom: 8 }}>
+          <label style={{ display: 'block', fontSize: 13, color: 'var(--ink-soft)', marginBottom: 8 }}>
+            Your total screen time this week (hours)
+          </label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              placeholder={typeof mySubmission.hours === 'number' ? String(mySubmission.hours) : 'e.g. 6.5'}
+              value={hoursInput}
+              onChange={(e) => setHoursInput(e.target.value)}
+            />
+            <button type="submit" className="primary" disabled={savingHours} style={{ whiteSpace: 'nowrap' }}>
+              {savingHours ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </form>
+      )}
+
       <p className="muted" style={{ fontSize: 13, margin: '8px 0 28px' }}>
-        {mySubmission ? 'You\u2019ve submitted for this week.' : 'You haven\u2019t submitted yet this week.'}
+        {mySubmission?.image && typeof mySubmission.hours === 'number'
+          ? `You\u2019re on the leaderboard for this week: ${mySubmission.hours}h.`
+          : mySubmission?.image
+          ? 'Screenshot uploaded \u2014 add your hours above to join the leaderboard.'
+          : 'You haven\u2019t submitted yet this week. A screenshot is required before your hours count.'}
       </p>
 
       <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 600, margin: '0 0 12px' }}>
-        Group this week
+        Leaderboard this week
       </h2>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 28 }}>
         {names.length === 0 && <p className="muted" style={{ fontSize: 14 }}>No one has joined yet.</p>}
-        {names.map((name) => {
-          const sub = group.members[name]?.submissions?.[week];
+        {leaderboardEntries.map(({ name, sub, complete }, i) => {
+          const isOver = complete && sub.hours > group.limit_hours;
           return (
             <div
               key={name}
@@ -280,15 +635,27 @@ export default function Home() {
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 padding: '12px 16px',
-                cursor: sub ? 'pointer' : 'default',
+                cursor: sub?.image ? 'pointer' : 'default',
+                borderColor: complete ? (isOver ? 'var(--clay)' : 'var(--moss)') : 'var(--line)',
               }}
-              onClick={() => sub && setActiveImage({ url: sub.image, name })}
+              onClick={() => sub?.image && setActiveImage({ url: sub.image, name })}
             >
-              <span style={{ fontSize: 14, fontWeight: 500 }}>
+              <span style={{ fontSize: 14, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8 }}>
+                {complete && (
+                  <span className="muted" style={{ fontFamily: 'var(--font-display)', fontWeight: 600 }}>
+                    #{i + 1}
+                  </span>
+                )}
                 {name}{name === myName ? ' (you)' : ''}
               </span>
-              <span className="muted" style={{ fontSize: 13 }}>
-                {sub ? 'Submitted' : 'Pending'}
+              <span
+                style={{
+                  fontSize: 13,
+                  fontWeight: complete ? 600 : 400,
+                  color: complete ? (isOver ? 'var(--clay)' : 'var(--moss)') : 'var(--ink-soft)',
+                }}
+              >
+                {complete ? `${sub.hours}h${isOver ? ' · over' : ' · under'}` : sub?.image ? 'Awaiting hours' : 'Pending'}
               </span>
             </div>
           );
@@ -307,15 +674,20 @@ export default function Home() {
             key={i}
             style={{
               display: 'flex',
+              alignItems: 'center',
               justifyContent: 'space-between',
               background: 'var(--clay-light)',
               borderRadius: 10,
               padding: '10px 14px',
               fontSize: 13,
+              gap: 8,
             }}
           >
             <span style={{ fontWeight: 500 }}>{p.name}</span>
-            <span className="muted">{p.text} ({p.week})</span>
+            <span className="muted" style={{ flex: 1, textAlign: 'right' }}>{p.text} ({p.week})</span>
+            <button onClick={() => clearPenalty(i)} style={{ padding: '4px 10px', fontSize: 12 }}>
+              Done
+            </button>
           </div>
         ))}
       </div>
