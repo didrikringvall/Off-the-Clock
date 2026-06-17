@@ -261,6 +261,24 @@ export default function Home() {
         <p className="muted" style={{ marginBottom: 24 }}>
           A weekly screen time challenge for your group. Stay under the limit, or pay the penalty.
         </p>
+
+        {group?.challenge && (
+          <div
+            className="card"
+            style={{ background: 'var(--moss-light)', border: 'none', marginBottom: 20 }}
+          >
+            <p className="muted" style={{ fontSize: 12, margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              Challenge in progress
+            </p>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 600, margin: 0 }}>
+              Week {(group.challenge.weeks_completed || 0) + 1} of {group.challenge.total_weeks}
+            </p>
+            <p className="muted" style={{ fontSize: 13, margin: '4px 0 0' }}>
+              {group.challenge.limit_hours}h limit/week · {group.challenge.penalty_text}
+            </p>
+          </div>
+        )}
+
         <form onSubmit={handleNameSubmit} className="card">
           <label style={{ display: 'block', fontSize: 13, color: 'var(--ink-soft)', marginBottom: 8 }}>
             What should we call you?
@@ -548,7 +566,7 @@ export default function Home() {
 
       <div
         className="card"
-        style={{ background: 'var(--moss-light)', border: 'none', marginBottom: 24 }}
+        style={{ background: 'var(--moss-light)', border: 'none', marginBottom: !group.challenge ? 12 : 24 }}
       >
         <p className="muted" style={{ fontSize: 13, margin: '0 0 4px' }}>Weekly limit</p>
         <p style={{ fontFamily: 'var(--font-display)', fontSize: 26, fontWeight: 600, margin: 0 }}>
@@ -558,6 +576,24 @@ export default function Home() {
           Penalty: {group.penalty_text}
         </p>
       </div>
+
+      {!group.challenge && (
+        <button
+          onClick={() => setView('settings')}
+          style={{
+            width: '100%',
+            marginBottom: 24,
+            textAlign: 'left',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: 'var(--clay-light)',
+            borderColor: 'var(--clay-light)',
+          }}
+        >
+          <span>Start a multi-week challenge with your group →</span>
+        </button>
+      )}
 
       <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 600, margin: '0 0 12px' }}>
         Submit your screenshot
