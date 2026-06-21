@@ -152,71 +152,14 @@ export default function Home() {
     setView('main');
   }
 
-  async function advanceOneWeek() {
-    const fresh = await (await fetch('/api/group')).json();
-    const endingWeek = fresh.current_week;
-
-    const results = {};
-    Object.entries(fresh.members).forEach(([name, member]) => {
-      const sub = member.submissions?.[endingWeek];
-      if (sub && sub.image && typeof sub.hours === 'number') {
-        results[name] = sub.hours;
-      }
-    });
-
-    const newPenalties = [];
-    Object.entries(results).forEach(([name, hours]) => {
-      if (hours > fresh.limit_hours) {
-        newPenalties.push({ name, text: fresh.penalty_text, week: endingWeek });
-      }
-    });
-
-    const weekRecord = {
-      week: endingWeek,
-      limit_hours: fresh.limit_hours,
-      penalty_text: fresh.penalty_text,
-      results,
-    };
-    const weekHistory = [...(fresh.week_history || []), weekRecord];
-    const penaltiesOwed = [...(fresh.penalties_owed || []), ...newPenalties];
-    const nextWeek = getWeekId(new Date(new Date(endingWeek).getTime() + 7 * 24 * 60 * 60 * 1000));
-
-    let challenge = fresh.challenge ? { ...fresh.challenge } : null;
-    let challengeSummary = fresh.challenge_summary || null;
-
-    if (challenge) {
-      challenge.weeks_completed = (challenge.weeks_completed || 0) + 1;
-      if (challenge.weeks_completed >= challenge.total_weeks) {
-        const challengeWeeks = weekHistory.filter(
-          (w) => w.week >= challenge.start_week && w.week < nextWeek
-        );
-        challengeSummary = {
-          start_week: challenge.start_week,
-          total_weeks: challenge.total_weeks,
-          limit_hours: challenge.limit_hours,
-          penalty_text: challenge.penalty_text,
-          weeks: challengeWeeks,
-        };
-        challenge = null;
-      }
-    }
-
-    await patchGroup({
-      current_week: nextWeek,
-      week_history: weekHistory,
-      penalties_owed: penaltiesOwed,
-      challenge,
-      challenge_summary: challengeSummary,
-    });
-    setView('main');
-  }
-
   async function clearPenalty(index) {
     const fresh = await (await fetch('/api/group')).json();
     const penaltiesOwed = [...(fresh.penalties_owed || [])];
     penaltiesOwed.splice(index, 1);
     await patchGroup({ penalties_owed: penaltiesOwed });
   }
+
+
 
   async function startChallenge(weeks, limit, penalty) {
     const fresh = await (await fetch('/api/group')).json();
@@ -242,6 +185,25 @@ export default function Home() {
 
   async function dismissChallengeSummary() {
     await patchGroup({ challenge_summary: null });
+  }
+
+  const ADMIN_NAME = 'Didrik';
+  const isAdmin = myName === ADMIN_NAME;
+
+  async function removeMember(name) {
+    const fresh = await (await fetch('/api/group')).json();
+    const members = { ...fresh.members };
+    delete members[name];
+    await patchGroup({ members });
+  }
+
+  async function adminEditPenaltyText(index, newText) {
+    const fresh = await (await fetch('/api/group')).json();
+    const penaltiesOwed = [...(fresh.penalties_owed || [])];
+    if (penaltiesOwed[index]) {
+      penaltiesOwed[index] = { ...penaltiesOwed[index], text: newText };
+      await patchGroup({ penalties_owed: penaltiesOwed });
+    }
   }
 
   if (loading) {
@@ -316,7 +278,7 @@ export default function Home() {
             step="0.5"
             value={limitInput}
             onChange={(e) => setLimitInput(e.target.value)}
-            disabled={!!group.challenge}
+            disabled={!!group.challenge && !isAdmin}
             style={{ marginBottom: 16 }}
           />
           <label style={{ display: 'block', fontSize: 13, color: 'var(--ink-soft)', marginBottom: 8 }}>
@@ -327,23 +289,32 @@ export default function Home() {
             value={penaltyInput}
             onChange={(e) => setPenaltyInput(e.target.value)}
             placeholder="e.g. 5 km run"
-            disabled={!!group.challenge}
+            disabled={!!group.challenge && !isAdmin}
           />
-          <button type="submit" className="primary" disabled={!!group.challenge} style={{ marginTop: 16, width: '100%' }}>
+          <button
+            type="submit"
+            className="primary"
+            disabled={!!group.challenge && !isAdmin}
+            style={{ marginTop: 16, width: '100%' }}
+          >
             Save
           </button>
-          {group.challenge && (
+          {group.challenge && !isAdmin && (
             <p className="muted" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
-              Limit and penalty are set by the active challenge below. Cancel it to edit these directly.
+              These are set by the active challenge. Only the admin can override them.
+            </p>
+          )}
+          {group.challenge && isAdmin && (
+            <p className="muted" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+              A challenge is active — as admin you can override the limit/penalty directly.
+            </p>
+          )}
+          {!group.challenge && (
+            <p className="muted" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+              These will apply when you start a new challenge below.
             </p>
           )}
         </form>
-        <div className="card" style={{ marginBottom: 16 }}>
-          <p className="muted" style={{ fontSize: 13, marginTop: 0, marginBottom: 12 }}>
-            Manually move to the next week. Anyone with a screenshot + hours over the limit this week gets added to "Penalties owed." Use this if your group isn't running a scheduled challenge, or to advance early.
-          </p>
-          <button onClick={advanceOneWeek} style={{ width: '100%' }}>Start new week</button>
-        </div>
 
         <div className="card" style={{ marginBottom: 16 }}>
           <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 600, margin: '0 0 8px' }}>
@@ -450,6 +421,54 @@ export default function Home() {
             </div>
           </div>
         )}
+
+        {isAdmin && (
+          <div className="card" style={{ marginTop: 16, borderColor: 'var(--clay)' }}>
+            <p className="muted" style={{ fontSize: 12, margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              Admin
+            </p>
+            <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 600, margin: '0 0 12px' }}>
+              Manage group
+            </h2>
+
+            {Object.keys(group.members).length === 0 ? (
+              <p className="muted" style={{ fontSize: 13 }}>No members yet.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
+                {Object.keys(group.members).map((name) => (
+                  <div
+                    key={name}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '8px 0',
+                      borderBottom: '1px solid var(--line)',
+                    }}
+                  >
+                    <span style={{ fontSize: 14 }}>{name}{name === ADMIN_NAME ? ' (admin)' : ''}</span>
+                    {name !== ADMIN_NAME && (
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`Remove ${name} from the group? This deletes their submission history.`)) {
+                            removeMember(name);
+                          }
+                        }}
+                        style={{ fontSize: 12, padding: '4px 10px' }}
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <p className="muted" style={{ fontSize: 12, margin: '0 0 8px' }}>
+              As admin, you can also edit the weekly limit/penalty and manage the challenge above, even while a challenge is active.
+            </p>
+          </div>
+        )}
       </main>
     );
   }
@@ -547,6 +566,66 @@ export default function Home() {
     );
   }
 
+  // No active challenge — show a simple prompt screen
+  if (!group.challenge) {
+    return (
+      <main className="container">
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 32 }}>
+          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 30, fontWeight: 600, margin: 0 }}>
+            Off the Clock
+          </h1>
+          <button onClick={() => setView('settings')} aria-label="Settings">⚙</button>
+        </div>
+
+        <div
+          className="card"
+          style={{ textAlign: 'center', padding: '40px 24px', borderStyle: 'dashed', marginBottom: 16 }}
+        >
+          <p style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 600, margin: '0 0 8px' }}>
+            No active challenge
+          </p>
+          <p className="muted" style={{ fontSize: 14, margin: '0 0 20px' }}>
+            Start a challenge to begin tracking your group's screen time this week.
+          </p>
+          <button className="primary" onClick={() => setView('settings')}>
+            Start a challenge →
+          </button>
+        </div>
+
+        {group.penalties_owed && group.penalties_owed.length > 0 && (
+          <>
+            <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 600, margin: '24px 0 12px' }}>
+              Penalties owed
+            </h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {group.penalties_owed.map((p, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    background: 'var(--clay-light)',
+                    borderRadius: 10,
+                    padding: '10px 14px',
+                    fontSize: 13,
+                    gap: 8,
+                  }}
+                >
+                  <span style={{ fontWeight: 500 }}>{p.name}</span>
+                  <span className="muted" style={{ flex: 1, textAlign: 'right' }}>{p.text} ({p.week})</span>
+                  <button onClick={() => clearPenalty(i)} style={{ padding: '4px 10px', fontSize: 12 }}>
+                    Done
+                  </button>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </main>
+    );
+  }
+
   return (
     <main className="container">
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 20 }}>
@@ -566,7 +645,7 @@ export default function Home() {
 
       <div
         className="card"
-        style={{ background: 'var(--moss-light)', border: 'none', marginBottom: !group.challenge ? 12 : 24 }}
+        style={{ background: 'var(--moss-light)', border: 'none', marginBottom: 24 }}
       >
         <p className="muted" style={{ fontSize: 13, margin: '0 0 4px' }}>Weekly limit</p>
         <p style={{ fontFamily: 'var(--font-display)', fontSize: 26, fontWeight: 600, margin: 0 }}>
@@ -576,24 +655,6 @@ export default function Home() {
           Penalty: {group.penalty_text}
         </p>
       </div>
-
-      {!group.challenge && (
-        <button
-          onClick={() => setView('settings')}
-          style={{
-            width: '100%',
-            marginBottom: 24,
-            textAlign: 'left',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            background: 'var(--clay-light)',
-            borderColor: 'var(--clay-light)',
-          }}
-        >
-          <span>Start a multi-week challenge with your group →</span>
-        </button>
-      )}
 
       <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 600, margin: '0 0 12px' }}>
         Submit your screenshot
